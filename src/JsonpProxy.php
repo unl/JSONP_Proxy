@@ -345,8 +345,8 @@ class JsonpProxy
             }
 
             $method = strtoupper($request->getParam('m'));
-            if (!in_array($method, $this->getOption('allowed_methods'))) {
-                throw new JsonpProxy_Exception('Missing or invalid HTTP method');
+            if (empty($method)) {
+                throw new JsonpProxy_Exception('Missing HTTP method');
             }
 
             // The request is valid
@@ -396,6 +396,8 @@ class JsonpProxy
             }
 
             $corsClient = null;
+            $corsCondition = false;
+
             if ($corsMode = $this->getOption('enforce_cors')) {
                 $corsCondition = true;
                 $origin = $referer;
@@ -416,21 +418,23 @@ class JsonpProxy
                             throw new JsonpProxy_Exception('CORS request missing origin/referer');
                     }
                 }
+            }
 
-                if ($corsCondition) {
-                    $refererUri = Zend_Uri::factory($origin);
-                    $origin = $refererUri->getScheme() . '://' . $refererUri->getHost() . $refererUri->getPort();
+            if ($corsCondition) {
+                $refererUri = Zend_Uri::factory($origin);
+                $origin = $refererUri->getScheme() . '://' . $refererUri->getHost() . $refererUri->getPort();
 
-                    // allow for transparent redirects even though we don't follow the Origin header spec
-                    // $client->setConfig(array('maxredirects' => 0));
-                    $client->setHeaders('Origin', $origin);
-                    $corsClient = clone $client;
+                // allow for transparent redirects even though we don't follow the Origin header spec
+                // $client->setConfig(array('maxredirects' => 0));
+                $client->setHeaders('Origin', $origin);
+                $corsClient = clone $client;
 
-                    if (!$this->_isSimpleRequest($method, $headers)
-                        && !$this->_doPreflightRequest($corsClient, $method, $headers, $origin, $credentialsFlag)) {
-                        throw new JsonpProxy_Exception('CORS Preflight denied request');
-                    }
+                if (!$this->_isSimpleRequest($method, $headers)
+                    && !$this->_doPreflightRequest($corsClient, $method, $headers, $origin, $credentialsFlag)) {
+                    throw new JsonpProxy_Exception('CORS Preflight denied request');
                 }
+            } elseif (!in_array($method, $this->getOption('allowed_methods'))) {
+                throw new JsonpProxy_Exception('Requested HTTP method is not allowed');
             }
 
             if ($headers) {
