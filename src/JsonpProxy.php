@@ -421,7 +421,8 @@ class JsonpProxy
                     $refererUri = Zend_Uri::factory($origin);
                     $origin = $refererUri->getScheme() . '://' . $refererUri->getHost() . $refererUri->getPort();
 
-                    $client->setConfig(array('maxredirects' => 0));
+                    // allow for transparent redirects even though we don't follow the Origin header spec
+                    // $client->setConfig(array('maxredirects' => 0));
                     $client->setHeaders('Origin', $origin);
                     $corsClient = clone $client;
 
