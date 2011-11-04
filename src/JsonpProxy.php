@@ -53,7 +53,9 @@ class JsonpProxy
      */
     protected $_defaultOptions = array(
         'log_mask' => 0,
+        'api_keys' => array(),
         'allowed_methods' => array(),
+        'blacklist_referer' => array(),
         'allowed_hosts' => array(),
         'client' => array(),
         'multipart_timeout' => 24,
@@ -216,7 +218,7 @@ class JsonpProxy
     {
         $this->_options = array_merge($this->_defaultOptions, $options);
 
-        $this->_options['allowed_methods'] = array_map("strtoupper", $this->_options['allowed_methods']);
+        $this->_options['allowed_methods'] = array_map("strtoupper", (array) $this->_options['allowed_methods']);
 
         return $this;
     }
@@ -257,6 +259,14 @@ class JsonpProxy
         $isSecure = $request->getScheme() == 'https' ? true : false;
 
         try {
+            if (in_array($referer, (array) $this->getOption('blacklist_referer'))) {
+                throw new JsonpProxy_Exception('Blacklisted referrer');
+            }
+
+            $keys = (array) $this->getOption('api_keys');
+            if (!empty($keys) && !in_array($request->getParam('k'), $keys)) {
+                throw new JsonpProxy_Exception('Invalid API key');
+            }
 
             // A callback must exist for every request
             if (!$callback = $request->getParam('c')) {
@@ -351,7 +361,7 @@ class JsonpProxy
 
             // The request is valid
 
-            $clientConfig = $this->getOption('client', array());
+            $clientConfig = (array) $this->getOption('client');
             if ($ua) {
                 $clientConfig['useragent'] = $ua;
             }
@@ -895,7 +905,7 @@ class JsonpProxy
     protected function _isHostAllowed($host)
     {
         $host = strtolower($host);
-        $allowedHosts = $this->getOption('allowed_hosts', array());
+        $allowedHosts = (array) $this->getOption('allowed_hosts');
 
         // Allow same orgin requests if no other host are specified
         if (empty($allowedHosts) && $this->_request->getHttpHost()) {
