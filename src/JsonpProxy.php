@@ -259,13 +259,13 @@ class JsonpProxy
         $isSecure = $request->getScheme() == 'https' ? true : false;
 
         try {
-            if (in_array($referer, (array) $this->getOption('blacklist_referer'))) {
+            if ($this->_isBlacklisted($referer)) {
                 throw new JsonpProxy_Exception('Blacklisted referrer');
             }
 
             $keys = (array) $this->getOption('api_keys');
             if (!empty($keys) && !in_array($request->getParam('k'), $keys)) {
-                throw new JsonpProxy_Exception('Invalid API key');
+                throw new JsonpProxy_Exception('Invalid or missing API key');
             }
 
             // A callback must exist for every request
@@ -518,6 +518,28 @@ class JsonpProxy
         $response->sendResponse();
 
         return $this;
+    }
+
+    /**
+     * Returns if any of the blacklisted referrers starts with the
+     * provided referer (sic) header value.
+     *
+     * @param string $referer
+     * @return boolean
+     */
+    protected function _isBlacklisted($referer)
+    {
+        if (empty($referer)) {
+            return false;
+        }
+
+        foreach ((array) $this->getOption('blacklist_referer') as $blacklist) {
+            if (strpos($referer, $blacklist) === 0) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**
