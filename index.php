@@ -17,5 +17,9 @@ set_include_path(implode(PATH_SEPARATOR, array(
 )));
 
 require_once APPLICATION_PATH . '/JsonpProxy.php';
-$app = new JsonpProxy(APPLICATION_ENV, APPLICATION_PATH . '/etc/config.xml');
+$app = new JsonpProxy(APPLICATION_ENV,
+    file_exists(APPLICATION_PATH . '/etc/config.xml')
+        ? APPLICATION_PATH . '/etc/config.xml'
+        : APPLICATION_PATH . '/etc/config.sample.xml'
+);
 $app->run();

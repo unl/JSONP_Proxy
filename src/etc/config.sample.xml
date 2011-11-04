@@ -14,5 +14,7 @@
     <dev zf:extends="prod">
         <log_mask value="3" />
         <enforce_cors value="2" />
+        <blacklist_referer value="http://example.com" />
+        <api_keys value="56b851f48d34dcf6df6fde571b4ec9b7"/>
     </dev>
 </config>
