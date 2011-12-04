@@ -253,269 +253,333 @@ class JsonpProxy
         }
         $this->_response = $response;
 
-        $ip = $request->getClientIp();
-        $ua = $request->getServer('HTTP_USER_AGENT', '');
-        $referer = $request->getServer('HTTP_REFERER', '');
-        $isSecure = $request->getScheme() == 'https' ? true : false;
+        $requestDetails = array(
+            'ip' => $request->getClientIp(),
+            'ua' => $request->getServer('HTTP_USER_AGENT', ''),
+            'referer' => $request->getServer('HTTP_REFERER', ''),
+            'is_secure' => $request->getScheme() == 'https' ? true : false,
+        );
+
+        $callback = $request->getParam('c');
 
         try {
-            if ($this->_isBlacklisted($referer)) {
-                throw new JsonpProxy_Exception('Blacklisted referrer');
-            }
-
-            $keys = (array) $this->getOption('api_keys');
-            if (!empty($keys) && !in_array($request->getParam('k'), $keys)) {
-                throw new JsonpProxy_Exception('Invalid or missing API key');
-            }
-
-            // A callback must exist for every request
-            if (!$callback = $request->getParam('c')) {
-                throw new JsonpProxy_Exception('Missing callback');
-            }
-
             // Handles multi-part requests
             if ($request->getParam('mp')) {
-                $multipartTotal = intval($request->getParam('mp'));
-                $multipartOffset = intval($request->getParam('mo', -1));
-                if ($multipartOffset < 0) {
-                    throw new JsonpProxy_Exception('Invalid multipart request, missing request offset');
-                }
-                if (!$multipartData = $request->getParam('md')) {
-                    throw new JsonpProxy_Exception('Invalid multipart request, missing request data/payload');
-                }
-
-                $data = $this->_loadMultipart($ip, $callback);
-
-                // Validate existing multipart info
-                if (!empty($data)) {
-                    if ($data['callback'] !== $callback || $data['total'] !== $multipartTotal) {
-                        throw new JsonpProxy_Exception('Invalid multipart request, data mismatch');
-                    }
-                } else {
-                    $data = array(
-                        'callback' => $callback,
-                        'total' => $multipartTotal,
-                        'payload' => array(),
-                    );
-                }
-
-                if (isset($data['payload'][$multipartOffset])) {
-                    throw new JsonpProxy_Exception('Invalid multipart request, duplicate request offset received');
-                }
-
-                $data['payload'][$multipartOffset] = $multipartData;
-
-                if (count($data['payload']) == $data['total']) {
-                    $this->_removeMultipart($ip, $callback);
-                    // Load the proper params into the request and process as normal
-                    $params = array();
-                    parse_str(implode('', $data['payload']), $params);
-
-                    if (!isset($params['c']) || $params['c'] !== $callback) {
-                        throw new JsonpProxy_Exception('Invalid multipart request, callback in payload mismatch');
-                    }
-
-                    $request->setParams($params);
-                } else {
-                    $this->_saveMultipart($ip, $callback, $data);
-                    $response->setHttpResponseCode(202)
-                        ->setHeader('Content-Type', 'text/javascript')
-                        ->setBody('// Successful multipart request, awaiting remaining data');
-
-                    $this->log($this->_formatAccessLog(array(
-                        'ip' => $ip,
-                        'method' => 'MULTIPART',
-                        'url' => '-',
-                        'status' => $response->getHttpResponseCode(),
-                        'referer' => $referer,
-                        'user-agent' => $ua,
-                    )));
-                    $response->sendResponse();
-
+                if ($this->_processMultipart($requestDetails, $callback)) {
                     return $this;
                 }
             }
 
             // Handles normal requests
-            if (!$url = $request->getParam('u')) {
-                throw new JsonpProxy_Exception('Missing target URL');
-            }
-            try {
-                /* @var $uri Zend_Uri_Http */
-                $uri = Zend_Uri::factory($url);
-                if (!method_exists($uri, 'getHost') || !$this->_isHostAllowed($uri->getHost())) {
-                    throw new JsonpProxy_Exception('Target URL\'s host is not allowed');
-                }
-
-                if ($isSecure && $uri->getScheme() != 'https') {
-                    throw new JsonpProxy_Exception('Cannot cross HTTP/HTTPS protocols');
-                }
-            } catch (Zend_Uri_Exception $ex) {
-                throw new JsonpProxy_Exception('Invalid target URL');
-            }
-
+            $url = $request->getParam('u');
             $method = strtoupper($request->getParam('m'));
-            if (empty($method)) {
-                throw new JsonpProxy_Exception('Missing HTTP method');
-            }
-
-            // The request is valid
-
-            $clientConfig = (array) $this->getOption('client');
-            if ($ua) {
-                $clientConfig['useragent'] = $ua;
-            }
-            $client = new Zend_Http_Client($uri, $clientConfig);
-
-            $credentialsFlag = false;
-            if ($request->getParam('au') || $request->getParam('ap')) {
-                $credentialsFlag = true;
-                $client->setAuth($request->getParam('au'), $request->getParam('ap'));
-            }
-
-            $data = $request->getParam('d');
-            $headers = $request->getParam('h', array());
-            $contentType = false;
-
-            foreach ($headers as $name => $value) {
-                $name = strtolower($name);
-
-                if ($name == 'content-type') {
-                    $contentType = strtolower($value);
-                } elseif ($name == 'referer' || $name == 'x-forwarded-for') {
-                    unset($headers[$name]);
-                }
-            }
-            unset($name, $value);
-
-            $client->setHeaders('X-Forwarded-For', $ip);
-            if ($referer) {
-                $client->setHeaders('Referer', $referer);
-            }
-
-            if ($data && $method == Zend_Http_Client::GET) {
-                if ($contentType == Zend_Http_Client::ENC_URLENCODED) {
-                    $query = $client->getUri()->getQuery();
-                    if (!empty($query)) {
-                        $query .= '&';
-                    }
-                    $query .= $data;
-                    $client->getUri()->setQuery($query);
-                    unset($data);
-                }
-            }
-
-            $corsClient = null;
-            $corsCondition = false;
-
-            if ($corsMode = $this->getOption('enforce_cors')) {
-                $corsCondition = true;
-                $origin = $referer;
-
-                if (empty($origin)) {
-                    switch ($corsMode) {
-                        case self::CORS_MODE_IGNORE_EMPTY:
-                            $corsCondition = false;
-                            break;
-                        case self::CORS_MODE_COPY_SELF:
-                            $origin = $request->getHttpHost();
-                            if (empty($origin)) {
-                                throw new JsonpProxy_Exception('CORS request cannot copy host');
-                            }
-                            $origin = ($isSecure ? 'https://' : 'http://') . $origin . '/';
-                            break;
-                        case self::CORS_MODE_REQUIRE:
-                            throw new JsonpProxy_Exception('CORS request missing origin/referer');
-                    }
-                }
-            }
-
-            if ($corsCondition) {
-                $refererUri = Zend_Uri::factory($origin);
-                $origin = $refererUri->getScheme() . '://' . $refererUri->getHost() . $refererUri->getPort();
-
-                // allow for transparent redirects even though we don't follow the Origin header spec
-                // $client->setConfig(array('maxredirects' => 0));
-                $client->setHeaders('Origin', $origin);
-                $corsClient = clone $client;
-
-                if (!$this->_isSimpleRequest($method, $headers)
-                    && !$this->_doPreflightRequest($corsClient, $method, $headers, $origin, $credentialsFlag)) {
-                    throw new JsonpProxy_Exception('CORS Preflight denied request');
-                }
-            } elseif (!in_array($method, $this->getOption('allowed_methods'))) {
-                throw new JsonpProxy_Exception('Requested HTTP method is not allowed');
-            }
-
-            if ($headers) {
-                $client->setHeaders($headers);
-            }
-
-            if ($data) {
-                $client->setRawData($data, $contentType);
-            }
-
-            $proxyResponse = $client->request($method);
-
-            if ($proxyResponse->isRedirect()) {
-                throw new JsonpProxy_Exception('Redirection not allowed');
-            }
-
-            // check for CORS
-            $responseHeaders = $proxyResponse->getHeaders();
-            if (null !== $corsClient) {
-                if (!$this->_doResourceCheck($origin, $credentialsFlag, $proxyResponse)) {
-                    throw new JsonpProxy_Exception('CORS Request Network Failure');
-                }
-
-                $allowedHeaders = $this->_parseMultiValueCorsHeader($proxyResponse->getHeader('Access-Control-Expose-Headers'), true);
-
-                foreach (array_keys($responseHeaders) as $name) {
-                    if (!$this->_isSimpleResponseHeader(strtolower($name), $allowedHeaders)) {
-                        unset($responseHeaders[$name]);
-                    }
-                }
-            }
-
-            $result = array(
-                'status' => $proxyResponse->getStatus(),
-                'statusText' => $proxyResponse->getMessage(),
-                'responseHeaders' => $responseHeaders,
-                'responseText' => $proxyResponse->getBody(),
-            );
-
-            $response->setHttpResponseCode($result['status'])
-                ->setHeader('Content-Type', 'text/javascript')
-                ->setBody($callback . '('
-                    . ($this->getEnvironment() == 'dev'
-                    ? Zend_Json::prettyPrint(Zend_Json::encode($result))
-                    : Zend_Json::encode($result)) . ');');
-
-
+            $this->_processStandard($requestDetails, $callback, $method, $url);
         } catch (JsonpProxy_Exception $ex) {
             $this->log($this->_formatErrorLog(array(
-                'ip' => $ip,
+                'ip' => $requestDetails['ip'],
                 'message' => $ex->getMessage(),
             )), self::LOG_ERROR, Zend_Log::ERR);
             $this->_initBadResponse($ex->getMessage());
         } catch (Zend_Http_Client_Exception $ex) {
             $this->log($this->_formatErrorLog(array(
-                'ip' => $ip,
+                'ip' => $requestDetails['ip'],
                 'message' => $ex->getMessage(),
             )), self::LOG_ERROR, Zend_Log::ERR);
             $this->_initBadResponse($ex->getMessage());
         }
 
         $this->log($this->_formatAccessLog(array(
-            'ip' => $ip,
+            'ip' => $requestDetails['ip'],
             'method' => isset($method) ? $method : '-',
             'url' => isset($url) ? $url : '-',
             'status' => $response->getHttpResponseCode(),
-            'referer' => $referer,
-            'user-agent' => $ua,
+            'referer' => $requestDetails['referer'],
+            'user-agent' => $requestDetails['ua'],
         )));
 
         $response->sendResponse();
+
+        return $this;
+    }
+
+    /**
+     * Validates all common requests
+     *
+     * @param Zend_Controller_Request_Abstract $request
+     * @param array $requestDetails
+     * @param string $callback
+     * @throws JsonpProxy_Exception
+     * @return JsonpProxy
+     */
+    protected function _validateRequest($request, $requestDetails, $callback)
+    {
+        if ($this->_isBlacklisted($requestDetails['referer'])) {
+            throw new JsonpProxy_Exception('Blacklisted referrer');
+        }
+
+        $keys = (array) $this->getOption('api_keys');
+        if (!empty($keys) && !in_array($request->getParam('k'), $keys)) {
+            throw new JsonpProxy_Exception('Invalid or missing API key');
+        }
+
+        // A callback must exist for every request
+        if (!$callback) {
+            throw new JsonpProxy_Exception('Missing callback');
+        }
+
+        return $this;
+    }
+
+    /**
+     * Validates and processes a multipart request
+     *
+     * @param array $requestDetails
+     * @param string $callback
+     * @throws JsonpProxy_Exception
+     * @return boolean
+     */
+    protected function _processMultipart($requestDetails, $callback)
+    {
+        $request = $this->_request;
+        $response = $this->_response;
+
+        $this->_validateRequest($request, $requestDetails, $callback);
+
+        $multipartTotal = intval($request->getParam('mp'));
+        $multipartOffset = intval($request->getParam('mo', -1));
+        if ($multipartOffset < 0) {
+            throw new JsonpProxy_Exception('Invalid multipart request, missing request offset');
+        }
+        if (!$multipartData = $request->getParam('md')) {
+            throw new JsonpProxy_Exception('Invalid multipart request, missing request data/payload');
+        }
+
+        $data = $this->_loadMultipart($requestDetails['ip'], $callback);
+
+        // Validate existing multipart info
+        if (!empty($data)) {
+            if ($data['callback'] !== $callback || $data['total'] !== $multipartTotal) {
+                throw new JsonpProxy_Exception('Invalid multipart request, data mismatch');
+            }
+        } else {
+            $data = array(
+                'callback' => $callback,
+                'total' => $multipartTotal,
+                'payload' => array(),
+            );
+        }
+
+        if (isset($data['payload'][$multipartOffset])) {
+            throw new JsonpProxy_Exception('Invalid multipart request, duplicate request offset received');
+        }
+
+        $data['payload'][$multipartOffset] = $multipartData;
+
+        if (count($data['payload']) == $data['total']) {
+            $this->_removeMultipart($requestDetails['ip'], $callback);
+            // Load the proper params into the request and process as normal
+            $params = array();
+            parse_str(implode('', $data['payload']), $params);
+
+            if (!isset($params['c']) || $params['c'] !== $callback) {
+                throw new JsonpProxy_Exception('Invalid multipart request, callback in payload mismatch');
+            }
+
+            $request->setParams($params);
+        } else {
+            $this->_saveMultipart($requestDetails['ip'], $callback, $data);
+            $response->setHttpResponseCode(202)
+                ->setHeader('Content-Type', 'text/javascript')
+                ->setBody('// Successful multipart request, awaiting remaining data');
+
+            $this->log($this->_formatAccessLog(array(
+                'ip' => $requestDetails['ip'],
+                'method' => 'MULTIPART',
+                'url' => '-',
+                'status' => $response->getHttpResponseCode(),
+                'referer' => $requestDetails['referer'],
+                'user-agent' => $requestDetails['ua'],
+            )));
+            $response->sendResponse();
+
+            return true;
+        }
+
+        return false;
+    }
+
+    /**
+     * Validates and processes a standard request
+     *
+     * @param array $requestDetails
+     * @param string $callback
+     * @param string $method
+     * @param string $url
+     * @throws JsonpProxy_Exception
+     * @return JsonpProxy
+     */
+    protected function _processStandard($requestDetails, $callback, $method, $url)
+    {
+        $request = $this->_request;
+        $response = $this->_response;
+
+        $this->_validateRequest($request, $requestDetails, $callback);
+
+        if (!$url) {
+            throw new JsonpProxy_Exception('Missing target URL');
+        }
+        try {
+            //TODO: Fix urls that have spaces (or other unescaped chars) #2
+            /* @var $uri Zend_Uri_Http */
+            $uri = Zend_Uri::factory($url);
+            if (!method_exists($uri, 'getHost') || !$this->_isHostAllowed($uri->getHost())) {
+                throw new JsonpProxy_Exception('Target URL\'s host is not allowed');
+            }
+
+            //TODO: Better support for crossing protocols (#3)
+            if ($requestDetails['is_secure'] && $uri->getScheme() != 'https') {
+                throw new JsonpProxy_Exception('Cannot cross HTTP/HTTPS protocols');
+            }
+        } catch (Zend_Uri_Exception $ex) {
+            throw new JsonpProxy_Exception('Invalid target URL');
+        }
+
+        if (empty($method)) {
+            throw new JsonpProxy_Exception('Missing HTTP method');
+        }
+
+        // The request is valid
+
+        $clientConfig = (array) $this->getOption('client');
+        if ($requestDetails['ua']) {
+            $clientConfig['useragent'] = $requestDetails['ua'];
+        }
+        $client = new Zend_Http_Client($uri, $clientConfig);
+
+        $credentialsFlag = false;
+        if ($request->getParam('au') || $request->getParam('ap')) {
+            $credentialsFlag = true;
+            $client->setAuth($request->getParam('au'), $request->getParam('ap'));
+        }
+
+        $data = $request->getParam('d');
+        $headers = $request->getParam('h', array());
+        $contentType = false;
+
+        foreach ($headers as $name => $value) {
+            $name = strtolower($name);
+
+            if ($name == 'content-type') {
+                $contentType = strtolower($value);
+            } elseif ($name == 'referer' || $name == 'x-forwarded-for') {
+                unset($headers[$name]);
+            }
+        }
+        unset($name, $value);
+
+        $client->setHeaders('X-Forwarded-For', $requestDetails['ip']);
+        if ($requestDetails['referer']) {
+            $client->setHeaders('Referer', $requestDetails['referer']);
+        }
+
+        if ($data && $method == Zend_Http_Client::GET) {
+            if ($contentType == Zend_Http_Client::ENC_URLENCODED) {
+                $query = $client->getUri()->getQuery();
+                if (!empty($query)) {
+                    $query .= '&';
+                }
+                $query .= $data;
+                $client->getUri()->setQuery($query);
+                unset($data);
+            }
+        }
+
+        $corsClient = null;
+        $corsCondition = false;
+
+        if ($corsMode = $this->getOption('enforce_cors')) {
+            $corsCondition = true;
+            $origin = $requestDetails['referer'];
+
+            if (empty($origin)) {
+                switch ($corsMode) {
+                    case self::CORS_MODE_IGNORE_EMPTY:
+                        $corsCondition = false;
+                        break;
+                    case self::CORS_MODE_COPY_SELF:
+                        $origin = $request->getHttpHost();
+                        if (empty($origin)) {
+                            throw new JsonpProxy_Exception('CORS request cannot copy host');
+                        }
+                        $origin = ($requestDetails['is_secure'] ? 'https://' : 'http://') . $origin . '/';
+                        break;
+                    case self::CORS_MODE_REQUIRE:
+                        throw new JsonpProxy_Exception('CORS request missing origin/referer');
+                }
+            }
+        }
+
+        if ($corsCondition) {
+            $refererUri = Zend_Uri::factory($origin);
+            $origin = $refererUri->getScheme() . '://' . $refererUri->getHost() . $refererUri->getPort();
+
+            // allow for transparent redirects even though we don't follow the Origin header spec
+            // $client->setConfig(array('maxredirects' => 0));
+            $client->setHeaders('Origin', $origin);
+            $corsClient = clone $client;
+
+            if (!$this->_isSimpleRequest($method, $headers)
+                && !$this->_doPreflightRequest($corsClient, $method, $headers, $origin, $credentialsFlag)
+            ) {
+                throw new JsonpProxy_Exception('CORS Preflight denied request');
+            }
+        } elseif (!in_array($method, $this->getOption('allowed_methods'))) {
+            throw new JsonpProxy_Exception('Requested HTTP method is not allowed');
+        }
+
+        if ($headers) {
+            $client->setHeaders($headers);
+        }
+
+        if ($data) {
+            $client->setRawData($data, $contentType);
+        }
+
+        $proxyResponse = $client->request($method);
+
+        if ($proxyResponse->isRedirect()) {
+            throw new JsonpProxy_Exception('Redirection not allowed');
+        }
+
+        // check for CORS
+        $responseHeaders = $proxyResponse->getHeaders();
+        if (null !== $corsClient) {
+            if (!$this->_doResourceCheck($origin, $credentialsFlag, $proxyResponse)) {
+                throw new JsonpProxy_Exception('CORS Request Network Failure');
+            }
+
+            $allowedHeaders = $this->_parseMultiValueCorsHeader($proxyResponse->getHeader('Access-Control-Expose-Headers'), true);
+
+            foreach (array_keys($responseHeaders) as $name) {
+                if (!$this->_isSimpleResponseHeader(strtolower($name), $allowedHeaders)) {
+                    unset($responseHeaders[$name]);
+                }
+            }
+        }
+
+        $result = array(
+            'status' => $proxyResponse->getStatus(),
+            'statusText' => $proxyResponse->getMessage(),
+            'responseHeaders' => $responseHeaders,
+            'responseText' => $proxyResponse->getBody(),
+        );
+
+        $response->setHttpResponseCode($result['status'])
+            ->setHeader('Content-Type', 'text/javascript')
+            ->setBody($callback . '('
+                . ($this->getEnvironment() == 'dev'
+                ? Zend_Json::prettyPrint(Zend_Json::encode($result))
+                : Zend_Json::encode($result)) . ');');
 
         return $this;
     }
@@ -1063,7 +1127,7 @@ class JsonpProxy
     /**
      * Sets the log type bitmask
      *
-     * @param unknown_type $mask
+     * @param int $mask
      * @return JsonpProxy
      */
     public function enableLog($mask)
