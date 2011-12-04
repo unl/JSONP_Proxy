@@ -9,6 +9,10 @@ class JsonpProxy
     const CORS_MODE_COPY_SELF     = 2;
     const CORS_MODE_REQUIRE       = 3;
 
+    const SECURE_MODE_STRICT   = 1;
+    const SECURE_MODE_RELAXED  = 2;
+    const SECURE_MODE_LAX      = 3;
+
     protected $_logRegistry = array();
 
     /**
@@ -61,6 +65,7 @@ class JsonpProxy
         'multipart_timeout' => 24,
         'enforce_cors' => false,
         'cors_max_age' => 300,
+        'secure_mode' => self::SECURE_MODE_RELAXED,
     );
 
     protected $_corsSimpleMethods = array(
@@ -444,9 +449,8 @@ class JsonpProxy
                 throw new JsonpProxy_Exception('Target URL\'s host is not allowed');
             }
 
-            //TODO: Better support for crossing protocols (#3)
-            if ($requestDetails['is_secure'] && $uri->getScheme() != 'https') {
-                throw new JsonpProxy_Exception('Cannot cross HTTP/HTTPS protocols');
+            if (!$this->_checkProtocol($requestDetails['is_secure'], $uri->getScheme())) {
+                throw new JsonpProxy_Exception('Crossing HTTP/HTTPS protocols is disallowed');
             }
         } catch (Zend_Uri_Exception $ex) {
             throw new JsonpProxy_Exception('Invalid target URL');
@@ -590,6 +594,27 @@ class JsonpProxy
                 : Zend_Json::encode($result)) . ');');
 
         return $this;
+    }
+
+    /**
+     * Checks if a scheme crosses the accessed protocol
+     *
+     * @param boolean $isSecure
+     * @param string $scheme
+     * @return boolean
+     */
+    protected function _checkProtocol($isSecure, $scheme)
+    {
+        $mode = $this->getOption('secure_mode');
+        if ($mode == self::SECURE_MODE_LAX) {
+            return true;
+        }
+
+        if ((!$isSecure && $scheme != 'http') || ($mode == self::SECURE_MODE_STRICT && $isSecure && $scheme != 'https')) {
+            return false;
+        }
+
+        return true;
     }
 
     /**

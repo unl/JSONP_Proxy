@@ -10,6 +10,7 @@
         <allowed_hosts value="huskeralum.com" />
         <allowed_hosts value="huskeralum.org" />
         <cors_max_age value="300" />
+        <secure_mode value="2" />
     </prod>
     <dev zf:extends="prod">
         <log_mask value="3" />
