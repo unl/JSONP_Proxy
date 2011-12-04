@@ -276,16 +276,7 @@ class JsonpProxy
             }
 
             // Handles normal requests
-            $url = $request->getParam('u');
-            $urlParts = explode('?', $url, 2);
-            if (!empty($urlParts[1])) {
-                $urlParts[1] = explode('#', $urlParts[1], 2);
-                if (strpos($urlParts[1][0], '%') === false) {
-                    $urlParts[1][0] = urlencode($urlParts[1][0]);
-                    $urlParts[1] = implode('#', $urlParts[1]);
-                    $url = implode('?', $urlParts);
-                }
-            }
+            $url = $this->sanitizeUrl($request->getParam('u'));
             $method = strtoupper($request->getParam('m'));
             $this->_processStandard($requestDetails, $callback, $method, $url);
         } catch (JsonpProxy_Exception $ex) {
@@ -786,6 +777,28 @@ class JsonpProxy
         }
 
         return true;
+    }
+
+    /**
+     * @param string $url
+     * @return string
+     */
+    public function sanitizeUrl($url)
+    {
+        $urlParts = explode('?', $url, 2);
+        if (!empty($urlParts[1])) {
+            $urlParts[1] = explode('#', $urlParts[1], 2);
+            $urlParts[1][0] = preg_replace_callback('/%(?![[:xdigit:]]{2})|[^A-Za-z0-9-_.!~*\'()\[\];\/?:@&=+$,%]/', array($this, 'urlencodeCallback'), $urlParts[1][0]);
+            $urlParts[1] = implode('#', $urlParts[1]);
+            $url = implode('?', $urlParts);
+        }
+
+        return $url;
+    }
+
+    public function urlencodeCallback($matches)
+    {
+        return urlencode($matches[0]);
     }
 
     /**
