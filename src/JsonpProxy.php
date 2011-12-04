@@ -272,6 +272,15 @@ class JsonpProxy
 
             // Handles normal requests
             $url = $request->getParam('u');
+            $urlParts = explode('?', $url, 2);
+            if (!empty($urlParts[1])) {
+                $urlParts[1] = explode('#', $urlParts[1], 2);
+                if (strpos($urlParts[1][0], '%') === false) {
+                    $urlParts[1][0] = urlencode($urlParts[1][0]);
+                    $urlParts[1] = implode('#', $urlParts[1]);
+                    $url = implode('?', $urlParts);
+                }
+            }
             $method = strtoupper($request->getParam('m'));
             $this->_processStandard($requestDetails, $callback, $method, $url);
         } catch (JsonpProxy_Exception $ex) {
@@ -429,7 +438,6 @@ class JsonpProxy
             throw new JsonpProxy_Exception('Missing target URL');
         }
         try {
-            //TODO: Fix urls that have spaces (or other unescaped chars) #2
             /* @var $uri Zend_Uri_Http */
             $uri = Zend_Uri::factory($url);
             if (!method_exists($uri, 'getHost') || !$this->_isHostAllowed($uri->getHost())) {
