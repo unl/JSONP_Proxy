@@ -788,7 +788,9 @@ class JsonpProxy
         $urlParts = explode('?', $url, 2);
         if (!empty($urlParts[1])) {
             $urlParts[1] = explode('#', $urlParts[1], 2);
-            $urlParts[1][0] = preg_replace_callback('/%(?![[:xdigit:]]{2})|[^A-Za-z0-9-_.!~*\'()\[\];\/?:@&=+$,%]/', array($this, 'urlencodeCallback'), $urlParts[1][0]);
+            $urlParts[1][0] = preg_replace_callback('/%(?![[:xdigit:]]{2})|[^' .
+                Zend_Uri_Http::CHAR_ALNUM . Zend_Uri_Http::CHAR_MARK . Zend_Uri_Http::CHAR_RESERVED . '%]/',
+                array($this, 'urlencodeCallback'), $urlParts[1][0]);
             $urlParts[1] = implode('#', $urlParts[1]);
             $url = implode('?', $urlParts);
         }
